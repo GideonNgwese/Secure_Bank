@@ -56,3 +56,8 @@ key.properties
 .env.*
 *.pem
 serviceAccountKey.json
+
+# Deployment archives — zip the source folder yourself if you need one for
+# manual upload; a stale copy shouldn't live in version control
+backend.zip
+*.zip
