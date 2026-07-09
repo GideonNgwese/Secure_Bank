@@ -149,11 +149,21 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.post('/send-reset-code', wrap(async (req, res) => {
   const { email } = req.body;
   if (!isEmail(email)) return res.status(400).json({ message: 'Invalid email.' });
-  // Don't reveal whether the account exists; only email a code if it does.
+  // Don't reveal whether the account exists — the response is always the
+  // same 200 either way. But a failure to actually SEND (Brevo down, IP
+  // blocked, bad API key, ...) is a real problem worth knowing about, so
+  // that failure is logged separately from "no such user" instead of both
+  // being silently swallowed by one catch-all.
   try {
     await auth.getUserByEmail(email);
+  } catch (_) {
+    return res.json({ message: 'If that email exists, a code has been sent.' });
+  }
+  try {
     await issueCode('reset', email);
-  } catch (_) { /* no such user — respond 200 anyway */ }
+  } catch (e) {
+    console.error(`send-reset-code: Brevo send failed for ${email}:`, e?.response?.data || e.message);
+  }
   res.json({ message: 'If that email exists, a code has been sent.' });
 }));
 
