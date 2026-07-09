@@ -1,0 +1,27 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "bank-b6112",
+          "appId": "1:145294845556:android:d7c5b61707ec330fd8d321",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "bank-b6112",
+          "configurations": {
+            "android": "1:145294845556:android:d7c5b61707ec330fd8d321",
+            "ios": "1:145294845556:ios:7ca0e5bec85bd3f0d8d321",
+            "web": "1:145294845556:web:9ef166e06a6ddeead8d321"
+          }
+        }
+      }
+    }
+  }
+}

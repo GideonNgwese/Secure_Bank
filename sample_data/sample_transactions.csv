@@ -1,0 +1,6 @@
+date,account_name,type,category,amount,description
+2026-07-01,MTN MoMo,Income,Salary,150000,Monthly salary
+2026-07-02,MTN MoMo,Expense,Airtime,1000,Airtime purchase
+2026-07-03,MTN MoMo,Expense,Food,5000,Market shopping
+2026-07-04,UBA,Expense,Transport,2500,Taxi fare
+2026-07-05,UBA,Expense,Rent,60000,Monthly rent payment

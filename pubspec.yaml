@@ -1,0 +1,61 @@
+name: securebank
+description: "SecureBank - Fraud-Aware Personal Finance Aggregation System"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Firebase
+  firebase_core: ^4.11.0
+  firebase_auth: ^6.5.4
+  cloud_firestore: ^6.6.0
+
+  # UI / Utility
+  fl_chart: ^1.2.0
+  intl: ^0.20.3
+  uuid: ^4.3.3
+  provider: ^6.1.2
+  csv: ^8.0.0
+  fluttertoast: ^9.1.0
+
+  # Auth extras: Google sign-in, biometric (fingerprint) login, secure storage
+  google_sign_in: ^6.2.1
+  local_auth: ^2.3.0
+  flutter_secure_storage: ^9.2.2
+
+  # State management (clean architecture)
+  flutter_riverpod: ^2.5.1
+
+  # Vector assets (accurate brand logos, e.g. Google)
+  flutter_svg: ^2.0.10+1
+
+  # REST client for the secure backend (OTP / Brevo email endpoints)
+  http: ^1.6.0
+
+  # Media uploads (Cloudinary): image picking + crop + upload with progress
+  image_picker: ^1.2.3
+  image_cropper: ^12.2.1
+  dio: ^5.7.0
+
+  # Local persistence (onboarding-completed flag)
+  shared_preferences: ^2.3.2
+
+  # Reports export: PDF generation + native share/print sheet
+  pdf: ^3.13.0
+  printing: ^5.15.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo/

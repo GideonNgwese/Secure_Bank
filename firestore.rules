@@ -1,0 +1,246 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Users can read/update their own profile; admins can read/update any
+    // (needed for suspend/reactivate + KYC review).
+    // Hardening: a user may NOT create themselves as an admin or change their
+    // own role/status (prevents self-promotion and self-un-suspension), and may
+    // only move their own kycStatus to 'pending' (approve/reject is admin-only).
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+
+      // New users may only create their own doc as an ACTIVE CUSTOMER. Accept
+      // both schemas: legacy `status:'active'` or new `isActive:true`.
+      // .get(field, default) tolerates docs that omit a field.
+      allow create: if isOwner(userId) &&
+          request.resource.data.role == 'customer' &&
+          request.resource.data.get('status', 'active') == 'active' &&
+          request.resource.data.get('isActive', true) == true;
+
+      // Owners can update their profile but NOT change role or active/suspended
+      // state, and may only move kycStatus to 'pending'. Admins can do anything.
+      allow update: if isAdmin() ||
+          (isOwner(userId) &&
+           request.resource.data.role == resource.data.role &&
+           request.resource.data.get('status', 'active') ==
+               resource.data.get('status', 'active') &&
+           request.resource.data.get('isActive', true) ==
+               resource.data.get('isActive', true) &&
+           (request.resource.data.get('kycStatus', 'not_submitted') ==
+                   resource.data.get('kycStatus', 'not_submitted') ||
+               request.resource.data.get('kycStatus', 'not_submitted') ==
+                   'pending'));
+
+      allow delete: if false;
+    }
+
+    // Accounts, transactions, budgets: owned by the user who created them.
+    // Admins get read access for monitoring (flagged transactions, reports).
+    match /accounts/{accountId} {
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /transactions/{txId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /budgets/{budgetId} {
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Alerts belong to a single user. Create is restricted to alerts tagged
+    // with the caller's own uid (prevents spoofing alerts onto other users).
+    //
+    // The `resource == null ||` bypass matters here: _clearBudgetAlertIfStale()
+    // does a `.get()` on this doc's deterministic id (budget_<id>_<tier>)
+    // BEFORE writing, on every single transaction tied to a budgeted
+    // category — and for any threshold tier never yet crossed (the common
+    // case), that doc doesn't exist, so `resource` is null and there's no
+    // `resource.data` to check ownership against. Without this bypass, that
+    // read was denied, which broke checkBudgetAfterTransaction() — and
+    // therefore add/update/delete of ANY transaction in a budgeted category,
+    // regardless of risk.
+    match /alerts/{alertId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, update: if isSignedIn() &&
+          (resource == null ||
+           resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Fraud Detection & Financial Intelligence — same ownership model as
+    // /alerts. Written client-side by the caller's own device right after a
+    // transaction is scored, or when insights are (re)generated. No delete —
+    // dismissing sets status:'dismissed' so the audit trail is preserved.
+    //
+    // The `resource == null ||` clause in `read` matters: recordAlert() does
+    // a `.get()` on this doc's deterministic id (transactionId) BEFORE
+    // writing, to decide create-vs-update. For a brand-new transaction that
+    // doc doesn't exist yet, so `resource` is null and there's no
+    // `resource.data` to check ownership against — without this bypass, that
+    // existence-check read itself was denied, which failed the whole
+    // transaction write for anyone whose transaction was risky enough to
+    // score an alert (i.e. any transaction at or above the Medium risk
+    // band). `update` is unaffected: Firestore's update() already fails with
+    // not-found on a missing doc regardless of rules, so this bypass only
+    // ever helps the existence-check read.
+    match /fraud_alerts/{alertId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, update: if isSignedIn() &&
+          (resource == null ||
+           resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /financial_insights/{insightId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, update: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // The real notification log — auto-created alongside a fraud_alerts doc,
+    // OR fanned out by an admin broadcast (Admin Notification Center /
+    // Announcements — see AdminNotificationModel). Same ownership model: no
+    // delete, "dismissed" hides it from the feed. Same existence-check
+    // bypass as /fraud_alerts, needed for the same reason (the delete-
+    // cleanup path checks existence before dismissing).
+    //
+    // `|| isAdmin()` on create matters here: an admin broadcast writes one
+    // notification doc per RECIPIENT, not the admin's own uid, so the
+    // self-authored check alone would reject every admin-sent notification.
+    match /notifications/{notificationId} {
+      allow create: if isSignedIn() &&
+          (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow read, update: if isSignedIn() &&
+          (resource == null ||
+           resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Admin-side send-record for a broadcast notification/announcement —
+    // never read by customers directly (they only ever see the per-user
+    // docs it fans out into /notifications, above). Admin-only end to end.
+    match /admin_notifications/{id} {
+      allow create, read, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // A customer's quick-reaction/short-text reply to a notification. Create
+    // is self-authored only (can't spoof a response as another user); read
+    // is owner-or-admin (the admin's Communications screen needs to list
+    // every customer's responses); update is admin-only (marking a response
+    // "handled") — no delete, same append-only audit posture as the rest of
+    // this app's engagement/alert collections.
+    match /support_responses/{id} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Lightweight threaded conversation anchored to one notification — see
+    // NotificationThreadModel doc. Doc id == notificationId. Create by owner
+    // (starting their own thread) or admin (replying opens one on the
+    // customer's behalf if it doesn't exist yet, via the same sendMessage
+    // transaction). Only admins may change `status`/`pinned` — a customer
+    // reopening a thread via a new message is done through the repository's
+    // own transaction (still an update, but the repository, not the raw
+    // client, decides the value), so this still guards against a customer
+    // directly resolving/closing/pinning their own thread.
+    match /notification_threads/{threadId} {
+      allow create: if isSignedIn() &&
+          (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin()) &&
+          (isAdmin() ||
+           (request.resource.data.status == resource.data.status &&
+            request.resource.data.get('pinned', false) ==
+                resource.data.get('pinned', false)));
+      allow delete: if false;
+    }
+
+    // One message inside a /notification_threads conversation. Create is
+    // self-authored only. Read is sender-or-receiver-or-admin (a customer
+    // needs to read admin replies addressed to them, and vice versa).
+    // Update is receiver-or-admin (marking messages read). No delete — same
+    // append-only posture as the rest of this app's engagement collections.
+    match /thread_messages/{messageId} {
+      allow create: if isSignedIn() && request.resource.data.senderId == request.auth.uid;
+      allow read: if isSignedIn() &&
+          (resource.data.senderId == request.auth.uid ||
+           resource.data.receiverId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() &&
+          (resource.data.receiverId == request.auth.uid || isAdmin());
+      allow delete: if false;
+    }
+
+    // A queued/sent transactional email (see EmailRepository /
+    // server/lib/brevoClient.ts). Clients may only CREATE and READ — every
+    // status transition (queued -> sending -> delivered/failed/opened/
+    // clicked) is written by the trusted backend via the Firebase Admin
+    // SDK, which bypasses these rules entirely, so no client update path is
+    // needed or allowed. `userId` is whoever the email is FOR, not
+    // necessarily the caller (admin-initiated events like KYC decisions or
+    // announcements are queued by the admin's device on the customer's
+    // behalf).
+    match /email_queue/{id} {
+      allow create: if isSignedIn() &&
+          (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if false;
+    }
+
+    // Per-user email/push/in-app notification preferences (Settings ->
+    // Email Preferences). Doc id == uid. Owner-managed; admins can read/
+    // adjust for support purposes.
+    match /notification_preferences/{uid} {
+      allow read, create, update: if isOwner(uid) || isAdmin();
+      allow delete: if false;
+    }
+
+    // Append-only audit log. A caller may only write a log tagged with their
+    // own uid; admins may write action logs (e.g. suspending another user).
+    // Reads are admin-only.
+    match /activity_logs/{logId} {
+      allow create: if isSignedIn() &&
+          (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isAdmin();
+    }
+
+    // KYC documents: a user may only create/read/update their own submission;
+    // admins may read/update (approve/reject) and delete any.
+    match /kyc_documents/{docId} {
+      allow read: if isSignedIn() &&
+          (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+          request.resource.data.userId == request.auth.uid;
+      allow update: if isAdmin() ||
+          (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+  }
+}
